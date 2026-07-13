@@ -1,0 +1,6 @@
+{
+  "name": "Edubot MVP",
+  "description": "Edubot MVP - A virtual representation of an AI assistant robot featuring speech-to-speech interaction via Gemini Live API and 3D visualization.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
