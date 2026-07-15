@@ -16,7 +16,10 @@ export default function RobotPlaceholder({ robotState, emotion = 'default', ledC
   useFrame((state) => {
     // Head look around slightly when idle or thinking
     if (headRef.current) {
-      if (robotState === 'idle') {
+      if (robotState === 'off') {
+        headRef.current.rotation.y = MathUtils.lerp(headRef.current.rotation.y, 0, 0.1);
+        headRef.current.rotation.x = MathUtils.lerp(headRef.current.rotation.x, 0.5, 0.1); // Head down
+      } else if (robotState === 'idle') {
         headRef.current.rotation.y = MathUtils.lerp(headRef.current.rotation.y, Math.sin(state.clock.elapsedTime * 0.5) * 0.1, 0.1);
         headRef.current.rotation.x = MathUtils.lerp(headRef.current.rotation.x, Math.cos(state.clock.elapsedTime * 0.7) * 0.05, 0.1);
       } else if (robotState === 'listening') {
@@ -46,7 +49,11 @@ export default function RobotPlaceholder({ robotState, emotion = 'default', ledC
       let targetMouthScaleY = 0.5;
       let targetMouthPosY = -0.05;
       
-      if (emotion === 'happy') {
+      if (robotState === 'off') {
+        targetEyeScaleY = 0; // Eyes closed
+        targetMouthScaleX = 0;
+        targetMouthScaleY = 0;
+      } else if (emotion === 'happy') {
         targetEyeScaleY = blink * 0.3; // Squinting
         targetMouthScaleX = 1.2;
         targetMouthScaleY = 0.8;

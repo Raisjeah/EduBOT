@@ -1,10 +1,10 @@
 import { useState, useRef } from 'react';
 
-export type RobotState = 'idle' | 'listening' | 'thinking' | 'talking';
+export type RobotState = 'idle' | 'listening' | 'thinking' | 'talking' | 'off';
 export type Emotion = 'default' | 'happy' | 'sad' | 'angry' | 'thinking';
 
 export function useRobotState() {
-  const [robotState, setRobotState] = useState<RobotState>('idle');
+  const [robotState, setRobotState] = useState<RobotState>('off');
   const [emotion, setEmotion] = useState<Emotion>('default');
   const talkingTimeoutRef = useRef<number | null>(null);
 
@@ -25,6 +25,19 @@ export function useRobotState() {
     if (talkingTimeoutRef.current) {
       window.clearTimeout(talkingTimeoutRef.current);
     }
+    setRobotState('idle');
+    setEmotion('default');
+  };
+
+  const turnOff = () => {
+    if (talkingTimeoutRef.current) {
+      window.clearTimeout(talkingTimeoutRef.current);
+    }
+    setRobotState('off');
+    setEmotion('default');
+  };
+
+  const turnOn = () => {
     setRobotState('idle');
     setEmotion('default');
   };
@@ -59,6 +72,8 @@ export function useRobotState() {
     startListening, 
     stopListening, 
     setIdle, 
+    turnOn,
+    turnOff,
     handleAudioPlaying,
     analyzeTextForEmotion
   };

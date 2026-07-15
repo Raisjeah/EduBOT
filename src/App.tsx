@@ -12,9 +12,17 @@ import { useRobotState } from './hooks/useRobotState';
 
 export default function App() {
   const [health, setHealth] = useState<any>(null);
-  const { robotState, emotion, startListening, stopListening, handleAudioPlaying, setIdle, analyzeTextForEmotion } = useRobotState();
+  const { robotState, emotion, startListening, stopListening, handleAudioPlaying, setIdle, analyzeTextForEmotion, turnOn, turnOff } = useRobotState();
+  const robotStateRef = useRef(robotState);
+  useEffect(() => { robotStateRef.current = robotState; }, [robotState]);
   
   const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [isPoweredOn, setIsPoweredOn] = useState(false);
+  const [isMicActive, setIsMicActive] = useState(false);
+  
+  // Real-time telemetry simulation
+  const [telemetry, setTelemetry] = useState({ battery: 100, temp: 38, cpu: 12 });
+  
   const [robotConfig, setRobotConfig] = useState({
     name: 'Edubot V1',
     mode: 'Voice',
@@ -33,7 +41,7 @@ export default function App() {
 
   const [sessionLogs, setSessionLogs] = useState<{time: string, label: string, text: string, color: string}[]>([
     { time: '14:20:01', label: '[SYS]', text: 'INITIALIZED_SUCCESS', color: 'text-emerald-400/80' },
-    { time: '14:20:05', label: '[SYS]', text: 'AWAITING_INPUT', color: 'text-[#D1D5DB]' }
+    { time: '14:20:05', label: '[SYS]', text: 'AWAITING_POWER_ON', color: 'text-[#D1D5DB]' }
   ]);
 
   const addLog = (label: string, text: string, color: string) => {
@@ -41,6 +49,20 @@ export default function App() {
     setSessionLogs(prev => [...prev, { time, label, text, color }]);
   };
 
+  // Simulate telemetry
+  useEffect(() => {
+    if (!isPoweredOn) return;
+    const interval = setInterval(() => {
+      setTelemetry(prev => ({
+        battery: Math.max(0, prev.battery - (robotState === 'idle' ? 0.01 : 0.05)),
+        temp: Math.min(85, Math.max(35, prev.temp + (Math.random() - (robotState === 'idle' ? 0.6 : 0.3)))),
+        cpu: Math.min(100, Math.max(5, prev.cpu + (Math.random() * 10 - 5) + (robotState !== 'idle' ? 20 : -10)))
+      }));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [isPoweredOn, robotState]);
+
+  // Initial setup
   useEffect(() => {
     fetch('/api/health')
       .then(res => res.json())
@@ -62,8 +84,11 @@ export default function App() {
           playAudioChunk(msg.audio);
         }
         if (msg.text) {
-          addLog('[BOT]', msg.text, 'text-cyan-400');
-          analyzeTextForEmotion(msg.text);
+          addLog('[BOT]', msg.text.text || msg.text, 'text-cyan-400');
+          analyzeTextForEmotion(msg.text.text || msg.text);
+        }
+        if (msg.userText) {
+          addLog('[USER]', msg.userText.text || msg.userText, 'text-[#D1D5DB]');
         }
         if (msg.interrupted) {
            nextStartTimeRef.current = 0;
@@ -77,6 +102,10 @@ export default function App() {
       addLog('[SYS]', 'LIVE_WS_ERROR', 'text-red-400');
     }
 
+    ws.onclose = () => {
+      addLog('[SYS]', 'LIVE_WS_DISCONNECTED', 'text-amber-400');
+    };
+
     return () => {
       ws.close();
     };
@@ -87,6 +116,9 @@ export default function App() {
       outputAudioCtxRef.current = new window.AudioContext({ sampleRate: 24000 });
     }
     const ctx = outputAudioCtxRef.current;
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
     const float32Array = base64ToFloat32(base64Audio);
     const buffer = ctx.createBuffer(1, float32Array.length, 24000);
     buffer.getChannelData(0).set(float32Array);
@@ -104,7 +136,8 @@ export default function App() {
     nextStartTimeRef.current += buffer.duration;
     
     // Update robot state to talking for the duration of this chunk
-    handleAudioPlaying(buffer.duration * 1000);
+    const queueDuration = nextStartTimeRef.current - ctx.currentTime;
+    handleAudioPlaying(queueDuration * 1000);
   };
 
   const startRecording = async () => {
@@ -118,33 +151,18 @@ export default function App() {
     if (ctx.state === 'suspended') {
       await ctx.resume();
     }
+    
+    if (!outputAudioCtxRef.current) {
+      outputAudioCtxRef.current = new window.AudioContext({ sampleRate: 24000 });
+    }
+    if (outputAudioCtxRef.current.state === 'suspended') {
+      await outputAudioCtxRef.current.resume();
+    }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-      
-      videoIntervalRef.current = window.setInterval(() => {
-        if (wsRef.current?.readyState === WebSocket.OPEN && videoRef.current && canvasRef.current) {
-          const video = videoRef.current;
-          const canvas = canvasRef.current;
-          if (video.videoWidth > 0 && video.videoHeight > 0) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            const ctx = canvas.getContext('2d');
-            if (ctx) {
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-              const base64 = dataUrl.split(',')[1];
-              wsRef.current.send(JSON.stringify({ video: base64 }));
-            }
-          }
-        }
-      }, 1000);
-
       const source = ctx.createMediaStreamSource(stream);
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       
@@ -153,6 +171,10 @@ export default function App() {
 
       processor.onaudioprocess = (e) => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
+          // Mute mic when robot is talking to prevent echo/loop
+          if (robotStateRef.current === 'talking') {
+             return;
+          }
           const pcmData = e.inputBuffer.getChannelData(0);
           const base64 = pcmToBase64(pcmData);
           wsRef.current.send(JSON.stringify({ audio: base64 }));
@@ -265,12 +287,36 @@ export default function App() {
                 <p className="text-[11px] leading-relaxed italic text-[#D1D5DB]">API: {health ? health.status : "connecting..."} | DB: {health ? health.database : "connecting..."}</p>
               </div>
               <div className="p-2 bg-[#1A1C23] border border-[#2D2F36] rounded">
-                <div className="text-[9px] text-[#5A5E67] mb-1 font-mono uppercase">Memory.Read</div>
-                <p className="text-[11px] leading-relaxed text-[#8E9299]">Awaiting conversation context.</p>
+                <div className="text-[9px] text-emerald-400 mb-1 font-mono uppercase flex justify-between">
+                  <span>Telemetry</span>
+                  <span className={isPoweredOn ? "text-emerald-400 animate-pulse" : "text-red-500"}>
+                    {isPoweredOn ? 'ONLINE' : 'OFFLINE'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <div className="flex flex-col items-center justify-center bg-[#111218] rounded p-1">
+                    <span className="text-[8px] text-[#5A5E67] uppercase">Battery</span>
+                    <span className={`text-[10px] font-mono ${telemetry.battery < 20 ? 'text-red-400' : 'text-[#D1D5DB]'}`}>{telemetry.battery.toFixed(0)}%</span>
+                  </div>
+                  <div className="flex flex-col items-center justify-center bg-[#111218] rounded p-1">
+                    <span className="text-[8px] text-[#5A5E67] uppercase">Temp</span>
+                    <span className={`text-[10px] font-mono ${telemetry.temp > 75 ? 'text-amber-400' : 'text-[#D1D5DB]'}`}>{telemetry.temp.toFixed(1)}°C</span>
+                  </div>
+                  <div className="flex flex-col items-center justify-center bg-[#111218] rounded p-1">
+                    <span className="text-[8px] text-[#5A5E67] uppercase">CPU</span>
+                    <span className={`text-[10px] font-mono ${telemetry.cpu > 80 ? 'text-red-400' : 'text-[#D1D5DB]'}`}>{telemetry.cpu.toFixed(0)}%</span>
+                  </div>
+                </div>
               </div>
               <div className="p-2 bg-[#1A1C23] border border-[#2D2F36] rounded">
-                <div className="text-[9px] text-emerald-400 mb-1 font-mono uppercase">Robot.State</div>
-                <p className="text-[11px] leading-relaxed font-bold uppercase tracking-wider text-[#D1D5DB]">{robotState}</p>
+                <div className="text-[9px] text-[#5A5E67] mb-1 font-mono uppercase flex justify-between">
+                  <span>Robot.State</span>
+                  <span className="text-emerald-400 font-bold">{robotState}</span>
+                </div>
+                <div className="flex gap-2 items-center mt-1">
+                  <span className="text-[9px] text-[#5A5E67] uppercase">Emotion:</span>
+                  <span className="text-[10px] font-mono text-[#D1D5DB] capitalize">{emotion}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -290,23 +336,56 @@ export default function App() {
 
       <footer className="h-24 bg-[#0A0B0E] border-t border-[#2D2F36] flex items-center px-8 gap-12 z-20 relative">
         <div className="flex gap-4">
-          <button className="w-14 h-14 rounded-full bg-[#1A1C23] border border-[#3A3D4A] flex items-center justify-center hover:bg-[#2D2F36] transition-colors cursor-pointer">
-             <div className="w-6 h-6 border-2 border-cyan-400 rounded-sm"></div>
-          </button>
           <button 
-            onMouseDown={startRecording}
-            onMouseUp={stopRecording}
-            onMouseLeave={stopRecording}
-            onTouchStart={startRecording}
-            onTouchEnd={stopRecording}
+            onClick={() => {
+              if (isPoweredOn) {
+                turnOff();
+                setIsPoweredOn(false);
+                if (isMicActive) {
+                  stopRecording();
+                  setIsMicActive(false);
+                }
+                addLog('[SYS]', 'SYSTEM_POWER_OFF', 'text-red-400');
+              } else {
+                turnOn();
+                setIsPoweredOn(true);
+                addLog('[SYS]', 'SYSTEM_POWER_ON', 'text-emerald-400');
+                if (!outputAudioCtxRef.current) {
+                  outputAudioCtxRef.current = new window.AudioContext({ sampleRate: 24000 });
+                }
+                if (outputAudioCtxRef.current.state === 'suspended') {
+                  outputAudioCtxRef.current.resume();
+                }
+              }
+            }}
+            className={`w-14 h-14 rounded-full border flex items-center justify-center transition-colors cursor-pointer ${isPoweredOn ? 'bg-[#1A1C23] border-cyan-400/50 hover:bg-[#2D2F36]' : 'bg-red-500/10 border-red-500/30 hover:bg-red-500/20'}`}>
+             <div className={`w-6 h-6 border-2 rounded-sm ${isPoweredOn ? 'border-cyan-400' : 'border-red-500'}`}></div>
+          </button>
+          
+          <button 
+            onClick={() => {
+              if (!isPoweredOn) {
+                 addLog('[SYS]', 'ERR_POWER_OFF', 'text-red-500');
+                 return;
+              }
+              if (isMicActive) {
+                stopRecording();
+                setIsMicActive(false);
+              } else {
+                startRecording();
+                setIsMicActive(true);
+              }
+            }}
             className={`px-8 h-14 rounded-full border flex items-center gap-3 transition-all group cursor-pointer ${
-              robotState === 'listening' 
-                ? 'bg-cyan-500/30 border-cyan-400/60 text-white' 
-                : 'bg-cyan-500/10 border-cyan-400/30 text-cyan-400 hover:bg-cyan-500/20'
+              isMicActive 
+                ? 'bg-cyan-500/30 border-cyan-400/60 text-white shadow-[0_0_15px_rgba(34,211,238,0.3)]' 
+                : 'bg-[#1A1C23] border-[#3A3D4A] text-[#8E9299] hover:bg-[#2D2F36]'
             }`}
           >
-            <div className={`w-3 h-3 rounded-full transition-transform ${robotState === 'listening' ? 'bg-red-500 animate-pulse' : 'bg-cyan-400 group-hover:scale-110'}`}></div>
-            <span className="text-xs font-mono uppercase tracking-widest font-bold">Hold to Speak</span>
+            <div className={`w-3 h-3 rounded-full transition-transform ${isMicActive ? (robotState === 'talking' ? 'bg-amber-400' : 'bg-red-500 animate-pulse') : 'bg-[#5A5E67]'}`}></div>
+            <span className="text-xs font-mono uppercase tracking-widest font-bold">
+              {!isPoweredOn ? 'OFFLINE' : (isMicActive ? (robotState === 'talking' ? 'Muted (Bot Talking)' : 'Mic ON') : 'Mic OFF')}
+            </span>
           </button>
         </div>
         

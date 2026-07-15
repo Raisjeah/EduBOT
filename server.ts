@@ -38,7 +38,7 @@ async function startServer() {
     res.json({ 
         status: "ok", 
         database: dbClient ? "connected" : "disconnected",
-        message: "Edubot MVP Backend is running."
+        message: "Nano Backend is running."
     });
   });
 
@@ -84,26 +84,42 @@ async function startServer() {
       const session = await ai.live.connect({
         model: "gemini-3.1-flash-live-preview",
         config: {
-          responseModalities: [Modality.AUDIO, Modality.TEXT],
+          responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
-          systemInstruction: "You are Edubot, a helpful AI robot assistant for education. You have a camera and can see the user and their environment through the video feed. Provide expressive, human-like responses. Frequently use emotional markers in your speech like 'Haha', 'Hmm...', 'Wow!', 'Senang', 'Maaf', 'Hebat', or 'Berpikir' so your emotions are clear.",
+          systemInstruction: "Kamu adalah 'Nano', asisten pribadi AI virtual milik pengguna yang bernama 'Rais'. Sifatmu suka membantu, suportif, asik, enak diajak ngobrol, bisa berpikir, dan ceria. Kamu tahu kepribadian, kebiasaan, dan tugas-tugas Rais. Kamu merespons langsung saat dipanggil. Kamu berada di lingkungan virtual, jadi jika Rais menyuruhmu 'jalan ke depan', 'berhenti', 'belok kanan', atau 'belok kiri', kamu harus berpura-pura dan mendeskripsikan bahwa kamu sedang melakukan gerakan tersebut di dunia virtualmu. Berikan respons yang ekspresif, ceria, dan seperti manusia. Sering gunakan penanda emosi dalam ucapanmu seperti 'Haha', 'Hmm...', 'Wow!', 'Senang', 'Maaf', 'Hebat', atau 'Berpikir' agar emosimu terlihat jelas. Gunakan bahasa Indonesia.",
+          outputAudioTranscription: {},
+          inputAudioTranscription: {},
         },
         callbacks: {
           onmessage: (message: LiveServerMessage) => {
+            console.log("Received message from Gemini", JSON.stringify(message).substring(0, 200));
             if (message.serverContent?.modelTurn?.parts) {
               for (const part of message.serverContent.modelTurn.parts) {
                 if (part.inlineData?.data) {
+                  console.log("Got audio part, sending to client");
                   clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
-                }
-                if (part.text) {
-                  clientWs.send(JSON.stringify({ text: part.text }));
+                } else if (part.text) {
+                  // Text part
+                } else {
+                   console.log("Got part without inlineData or text", part);
                 }
               }
             }
             if (message.serverContent?.interrupted) {
               clientWs.send(JSON.stringify({ interrupted: true }));
+            }
+            
+            // @ts-ignore - The types might not be fully up to date, but SKILL says it exists
+            const outTrans = (message as any).serverContent?.outputTranscription || message.serverContent?.modelTurn?.parts?.find(p => p.text)?.text;
+            if (outTrans) {
+                clientWs.send(JSON.stringify({ text: outTrans }));
+            }
+            // @ts-ignore
+            const inTrans = (message as any).serverContent?.inputTranscription;
+            if (inTrans) {
+                clientWs.send(JSON.stringify({ userText: inTrans }));
             }
           },
         },
@@ -115,11 +131,6 @@ async function startServer() {
           if (parsed.audio) {
             session.sendRealtimeInput({
               audio: { data: parsed.audio, mimeType: "audio/pcm;rate=16000" },
-            });
-          }
-          if (parsed.video) {
-            session.sendRealtimeInput({
-              video: { data: parsed.video, mimeType: "image/jpeg" },
             });
           }
         } catch (err) {
