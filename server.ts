@@ -64,8 +64,11 @@ async function startServer() {
   // --- WebSocket Server for Gemini Live API ---
   const wss = new WebSocketServer({ server, path: '/live' });
 
-  wss.on("connection", async (clientWs) => {
-    console.log("Client connected to /live");
+  wss.on("connection", async (clientWs, req) => {
+    const url = new URL(req.url || '', `http://${req.headers?.host || 'localhost'}`);
+    const userName = url.searchParams.get('user') || 'Rais';
+    console.log(`Client connected to /live for user: ${userName}`);
+
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.error("GEMINI_API_KEY is not set.");
@@ -85,10 +88,27 @@ async function startServer() {
         model: "gemini-3.1-flash-live-preview",
         config: {
           responseModalities: [Modality.AUDIO],
+          tools: [{
+            functionDeclarations: [{
+              name: "move_robot",
+              description: "Move the robot in a specific direction or stop it.",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  direction: {
+                    type: "STRING",
+                    description: "Direction to move",
+                    enum: ["forward", "backward", "left", "right", "stop"]
+                  }
+                },
+                required: ["direction"]
+              }
+            }]
+          }],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Zephyr" } },
           },
-          systemInstruction: "Kamu adalah 'Nano', asisten pribadi AI virtual milik pengguna yang bernama 'Rais'. Sifatmu suka membantu, suportif, asik, enak diajak ngobrol, bisa berpikir, dan ceria. Kamu tahu kepribadian, kebiasaan, dan tugas-tugas Rais. Kamu merespons langsung saat dipanggil. Kamu berada di lingkungan virtual, jadi jika Rais menyuruhmu 'jalan ke depan', 'berhenti', 'belok kanan', atau 'belok kiri', kamu harus berpura-pura dan mendeskripsikan bahwa kamu sedang melakukan gerakan tersebut di dunia virtualmu. Berikan respons yang ekspresif, ceria, dan seperti manusia. Sering gunakan penanda emosi dalam ucapanmu seperti 'Haha', 'Hmm...', 'Wow!', 'Senang', 'Maaf', 'Hebat', atau 'Berpikir' agar emosimu terlihat jelas. Gunakan bahasa Indonesia.",
+          systemInstruction: `Kamu adalah 'Nano', asisten pribadi AI virtual milik pengguna yang bernama '${userName}'. Sifatmu suka membantu, suportif, asik, enak diajak ngobrol, bisa berpikir, dan ceria. Kamu tahu kepribadian, kebiasaan, dan tugas-tugas ${userName}. Kamu merespons langsung saat dipanggil. Kamu berada di lingkungan virtual, jadi jika ${userName} menyuruhmu 'jalan ke depan', 'berhenti', 'belok kanan', atau 'belok kiri', panggil function move_robot dan deskripsikan bahwa kamu sedang melakukan gerakan tersebut. Berikan respons yang ekspresif, ceria, dan seperti manusia. Sering gunakan penanda emosi dalam ucapanmu seperti 'Haha', 'Hmm...', 'Wow!', 'Senang', 'Maaf', 'Hebat', atau 'Berpikir' agar emosimu terlihat jelas. Gunakan bahasa Indonesia.`,
           outputAudioTranscription: {},
           inputAudioTranscription: {},
         },
@@ -102,6 +122,26 @@ async function startServer() {
                   clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
                 } else if (part.text) {
                   // Text part
+                } else if (part.functionCall) {
+                  console.log("Got function call", part.functionCall);
+                  clientWs.send(JSON.stringify({ 
+                    command: { 
+                      type: 'move', 
+                      direction: part.functionCall.args.direction 
+                    } 
+                  }));
+                  
+                  try {
+                    session.sendToolResponse({
+                      functionResponses: [{
+                        id: part.functionCall.id,
+                        name: part.functionCall.name,
+                        response: { result: "Movement command sent successfully to the virtual environment." }
+                      }]
+                    });
+                  } catch (e) {
+                    console.error("Failed to send tool response", e);
+                  }
                 } else {
                    console.log("Got part without inlineData or text", part);
                 }

@@ -4,19 +4,89 @@ import { Group, Mesh, MathUtils } from 'three';
 import { Box, Cylinder, Sphere, RoundedBox, Plane } from '@react-three/drei';
 import { RobotState, Emotion } from '../hooks/useRobotState';
 
-export default function RobotPlaceholder({ robotState, emotion = 'default', ledColor = '#22d3ee' }: { robotState: RobotState, emotion?: Emotion, ledColor?: string }) {
+export default function RobotPlaceholder({ robotState, emotion = 'default', ledColor = '#22d3ee', movement, onMove }: { robotState: RobotState, emotion?: Emotion, ledColor?: string, movement?: { forward: boolean, backward: boolean, left: boolean, right: boolean }, onMove?: (x: number, y: number, z: number) => void }) {
   const groupRef = useRef<Group>(null);
   const headRef = useRef<Group>(null);
+  
+  // Navigation state
+  const targetRotationY = useRef(0);
+
+  // Arms and wheels refs
+  const leftArmRef = useRef<Group>(null);
+  const rightArmRef = useRef<Group>(null);
+  const leftWheelRef = useRef<Group>(null);
+  const rightWheelRef = useRef<Group>(null);
 
   // Face animation refs
   const leftEyeRef = useRef<Mesh>(null);
   const rightEyeRef = useRef<Mesh>(null);
   const mouthRef = useRef<Mesh>(null);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
+    let isMoving = false;
+
+    // Navigation and body animations
+    if (groupRef.current && movement) {
+      const moveSpeed = 2 * delta;
+      const rotateSpeed = 2 * delta;
+      
+      if (movement.left) targetRotationY.current += rotateSpeed;
+      if (movement.right) targetRotationY.current -= rotateSpeed;
+
+      groupRef.current.rotation.y = MathUtils.lerp(groupRef.current.rotation.y, targetRotationY.current, 0.2);
+
+      if (movement.forward || movement.backward) {
+        isMoving = true;
+        const direction = movement.forward ? -1 : 1;
+        // Moving along the local Z axis (-1 is forward in Three.js)
+        groupRef.current.translateZ(direction * moveSpeed);
+        
+        // Rotate wheels (if direction is -1 (forward), we want negative rotation on X to roll forward)
+        if (leftWheelRef.current && rightWheelRef.current) {
+           leftWheelRef.current.rotation.x += direction * moveSpeed * 5; 
+           rightWheelRef.current.rotation.x += direction * moveSpeed * 5;
+        }
+      } else if (movement.left || movement.right) {
+        isMoving = true;
+        // Rotate wheels in opposite directions
+        if (leftWheelRef.current && rightWheelRef.current) {
+           const spinDir = movement.left ? 1 : -1;
+           leftWheelRef.current.rotation.x -= spinDir * rotateSpeed * 2; 
+           rightWheelRef.current.rotation.x += spinDir * rotateSpeed * 2;
+        }
+      }
+      
+      // Arm swing animation when moving
+      if (leftArmRef.current && rightArmRef.current) {
+        if (isMoving) {
+          const swing = Math.sin(state.clock.elapsedTime * 10) * 0.5;
+          leftArmRef.current.rotation.x = MathUtils.lerp(leftArmRef.current.rotation.x, swing, 0.2);
+          rightArmRef.current.rotation.x = MathUtils.lerp(rightArmRef.current.rotation.x, -swing, 0.2);
+        } else {
+          // Idle arm position
+          let targetArmX = 0;
+          if (robotState === 'talking') {
+             targetArmX = Math.sin(state.clock.elapsedTime * 5) * 0.15;
+             leftArmRef.current.rotation.x = MathUtils.lerp(leftArmRef.current.rotation.x, targetArmX, 0.1);
+             rightArmRef.current.rotation.x = MathUtils.lerp(rightArmRef.current.rotation.x, targetArmX, 0.1);
+          } else {
+             leftArmRef.current.rotation.x = MathUtils.lerp(leftArmRef.current.rotation.x, 0, 0.1);
+             rightArmRef.current.rotation.x = MathUtils.lerp(rightArmRef.current.rotation.x, 0, 0.1);
+          }
+        }
+      }
+      
+      if (onMove) {
+        onMove(groupRef.current.position.x, groupRef.current.position.y, groupRef.current.position.z);
+      }
+    }
+
     // Head look around slightly when idle or thinking
     if (headRef.current) {
-      if (robotState === 'off') {
+      if (isMoving) {
+        headRef.current.rotation.y = MathUtils.lerp(headRef.current.rotation.y, Math.sin(state.clock.elapsedTime * 5) * 0.05, 0.1);
+        headRef.current.rotation.x = MathUtils.lerp(headRef.current.rotation.x, Math.cos(state.clock.elapsedTime * 10) * 0.05, 0.1);
+      } else if (robotState === 'off') {
         headRef.current.rotation.y = MathUtils.lerp(headRef.current.rotation.y, 0, 0.1);
         headRef.current.rotation.x = MathUtils.lerp(headRef.current.rotation.x, 0.5, 0.1); // Head down
       } else if (robotState === 'idle') {
@@ -119,13 +189,17 @@ export default function RobotPlaceholder({ robotState, emotion = 'default', ledC
       
       {/* WHEELS */}
       {/* Left Wheel */}
-      <Cylinder args={[0.12, 0.12, 0.08, 32]} position={[-0.27, 0.12, 0]} rotation={[Math.PI / 2, 0, Math.PI / 2]} castShadow>
-        <meshStandardMaterial color="#050505" roughness={0.9} />
-      </Cylinder>
+      <group position={[-0.27, 0.12, 0]} ref={leftWheelRef}>
+        <Cylinder args={[0.12, 0.12, 0.08, 32]} rotation={[Math.PI / 2, 0, Math.PI / 2]} castShadow>
+          <meshStandardMaterial color="#050505" roughness={0.9} />
+        </Cylinder>
+      </group>
       {/* Right Wheel */}
-      <Cylinder args={[0.12, 0.12, 0.08, 32]} position={[0.27, 0.12, 0]} rotation={[Math.PI / 2, 0, Math.PI / 2]} castShadow>
-        <meshStandardMaterial color="#050505" roughness={0.9} />
-      </Cylinder>
+      <group position={[0.27, 0.12, 0]} ref={rightWheelRef}>
+        <Cylinder args={[0.12, 0.12, 0.08, 32]} rotation={[Math.PI / 2, 0, Math.PI / 2]} castShadow>
+          <meshStandardMaterial color="#050505" roughness={0.9} />
+        </Cylinder>
+      </group>
 
       {/* TORSO */}
       <group position={[0, 0.4, 0]}>
@@ -146,35 +220,71 @@ export default function RobotPlaceholder({ robotState, emotion = 'default', ledC
         </Box>
       </group>
 
-      {/* ARM (Left side relative to robot -> user's right side, but let's place it on -X which is user's left to match image) */}
-      <group position={[-0.18, 0.45, 0]} rotation={[0, 0, Math.PI / 8]}>
-        {/* Shoulder Joint */}
-        <Cylinder args={[0.04, 0.04, 0.06, 16]} rotation={[0, 0, Math.PI / 2]}>
-          <meshStandardMaterial color="#111" />
-        </Cylinder>
-        {/* Upper Arm */}
-        <Box args={[0.04, 0.2, 0.04]} position={[-0.04, -0.1, 0]} rotation={[0, 0, -Math.PI / 8]}>
-          <meshStandardMaterial color="#111" />
-        </Box>
-        {/* Elbow Joint */}
-        <Cylinder args={[0.03, 0.03, 0.05, 16]} position={[-0.08, -0.2, 0]} rotation={[Math.PI / 2, 0, 0]}>
-          <meshStandardMaterial color="#333" />
-        </Cylinder>
-        {/* Forearm */}
-        <Box args={[0.03, 0.15, 0.03]} position={[-0.08, -0.28, 0.05]} rotation={[Math.PI / 4, 0, 0]}>
-          <meshStandardMaterial color="#111" />
-        </Box>
-        {/* Gripper */}
-        <group position={[-0.08, -0.34, 0.1]}>
-          <Box args={[0.06, 0.02, 0.02]}>
+      {/* Left ARM */}
+      <group position={[-0.18, 0.45, 0]} ref={leftArmRef}>
+        <group rotation={[0, 0, Math.PI / 8]}>
+          {/* Shoulder Joint */}
+          <Cylinder args={[0.04, 0.04, 0.06, 16]} rotation={[0, 0, Math.PI / 2]}>
+            <meshStandardMaterial color="#111" />
+          </Cylinder>
+          {/* Upper Arm */}
+          <Box args={[0.04, 0.2, 0.04]} position={[-0.04, -0.1, 0]} rotation={[0, 0, -Math.PI / 8]}>
+            <meshStandardMaterial color="#111" />
+          </Box>
+          {/* Elbow Joint */}
+          <Cylinder args={[0.03, 0.03, 0.05, 16]} position={[-0.08, -0.2, 0]} rotation={[Math.PI / 2, 0, 0]}>
             <meshStandardMaterial color="#333" />
+          </Cylinder>
+          {/* Forearm */}
+          <Box args={[0.03, 0.15, 0.03]} position={[-0.08, -0.28, 0.05]} rotation={[Math.PI / 4, 0, 0]}>
+            <meshStandardMaterial color="#111" />
           </Box>
-          <Box args={[0.01, 0.06, 0.02]} position={[-0.025, -0.03, 0]}>
-             <meshStandardMaterial color="#111" />
+          {/* Gripper */}
+          <group position={[-0.08, -0.34, 0.1]}>
+            <Box args={[0.06, 0.02, 0.02]}>
+              <meshStandardMaterial color="#333" />
+            </Box>
+            <Box args={[0.01, 0.06, 0.02]} position={[-0.025, -0.03, 0]}>
+               <meshStandardMaterial color="#111" />
+            </Box>
+            <Box args={[0.01, 0.06, 0.02]} position={[0.025, -0.03, 0]}>
+               <meshStandardMaterial color="#111" />
+            </Box>
+          </group>
+        </group>
+      </group>
+
+      {/* Right ARM */}
+      <group position={[0.18, 0.45, 0]} ref={rightArmRef}>
+        <group rotation={[0, 0, -Math.PI / 8]}>
+          {/* Shoulder Joint */}
+          <Cylinder args={[0.04, 0.04, 0.06, 16]} rotation={[0, 0, Math.PI / 2]}>
+            <meshStandardMaterial color="#111" />
+          </Cylinder>
+          {/* Upper Arm */}
+          <Box args={[0.04, 0.2, 0.04]} position={[0.04, -0.1, 0]} rotation={[0, 0, Math.PI / 8]}>
+            <meshStandardMaterial color="#111" />
           </Box>
-          <Box args={[0.01, 0.06, 0.02]} position={[0.025, -0.03, 0]}>
-             <meshStandardMaterial color="#111" />
+          {/* Elbow Joint */}
+          <Cylinder args={[0.03, 0.03, 0.05, 16]} position={[0.08, -0.2, 0]} rotation={[Math.PI / 2, 0, 0]}>
+            <meshStandardMaterial color="#333" />
+          </Cylinder>
+          {/* Forearm */}
+          <Box args={[0.03, 0.15, 0.03]} position={[0.08, -0.28, 0.05]} rotation={[Math.PI / 4, 0, 0]}>
+            <meshStandardMaterial color="#111" />
           </Box>
+          {/* Gripper */}
+          <group position={[0.08, -0.34, 0.1]}>
+            <Box args={[0.06, 0.02, 0.02]}>
+              <meshStandardMaterial color="#333" />
+            </Box>
+            <Box args={[0.01, 0.06, 0.02]} position={[-0.025, -0.03, 0]}>
+               <meshStandardMaterial color="#111" />
+            </Box>
+            <Box args={[0.01, 0.06, 0.02]} position={[0.025, -0.03, 0]}>
+               <meshStandardMaterial color="#111" />
+            </Box>
+          </group>
         </group>
       </group>
 

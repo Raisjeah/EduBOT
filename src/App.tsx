@@ -5,7 +5,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment } from '@react-three/drei';
+import { OrbitControls, Environment, Grid } from '@react-three/drei';
 import RobotPlaceholder from './components/RobotPlaceholder';
 import { pcmToBase64, base64ToFloat32 } from './lib/audio';
 import { useRobotState } from './hooks/useRobotState';
@@ -23,11 +23,18 @@ export default function App() {
   // Real-time telemetry simulation
   const [telemetry, setTelemetry] = useState({ battery: 100, temp: 38, cpu: 12 });
   
+  const [movement, setMovement] = useState({ forward: false, backward: false, left: false, right: false });
+  const handleMove = (dir: keyof typeof movement, isDown: boolean) => {
+    setMovement(prev => ({ ...prev, [dir]: isDown }));
+  };
+
   const [robotConfig, setRobotConfig] = useState({
-    name: 'Edubot V1',
+    name: 'Nano',
+    userName: 'Rais',
     mode: 'Voice',
     ledColor: '#22d3ee'
   });
+  const [appliedUserName, setAppliedUserName] = useState(robotConfig.userName);
   
   const wsRef = useRef<WebSocket | null>(null);
   const inputAudioCtxRef = useRef<AudioContext | null>(null);
@@ -38,6 +45,13 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoIntervalRef = useRef<number | null>(null);
+  const coordsRef = useRef<HTMLDivElement | null>(null);
+
+  const handleRobotMove = (x: number, y: number, z: number) => {
+    if (coordsRef.current) {
+      coordsRef.current.textContent = `X: ${x.toFixed(2)} | Y: ${y.toFixed(2)} | Z: ${z.toFixed(2)}`;
+    }
+  };
 
   const [sessionLogs, setSessionLogs] = useState<{time: string, label: string, text: string, color: string}[]>([
     { time: '14:20:01', label: '[SYS]', text: 'INITIALIZED_SUCCESS', color: 'text-emerald-400/80' },
@@ -62,7 +76,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isPoweredOn, robotState]);
 
-  // Initial setup
+  // Initial setup and connection
   useEffect(() => {
     fetch('/api/health')
       .then(res => res.json())
@@ -70,11 +84,11 @@ export default function App() {
       .catch(err => console.error("Failed to fetch API:", err));
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${location.host}/live`);
+    const ws = new WebSocket(`${protocol}//${location.host}/live?user=${encodeURIComponent(appliedUserName)}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      addLog('[SYS]', 'LIVE_WS_CONNECTED', 'text-cyan-400');
+      addLog('[SYS]', `LIVE_WS_CONNECTED (${appliedUserName})`, 'text-cyan-400');
     };
 
     ws.onmessage = (event) => {
@@ -93,6 +107,19 @@ export default function App() {
         if (msg.interrupted) {
            nextStartTimeRef.current = 0;
         }
+        if (msg.command && msg.command.type === 'move') {
+           const dir = msg.command.direction;
+           addLog('[SYS]', `CMD_RECV: MOVE ${dir.toUpperCase()}`, 'text-amber-400');
+           
+           setMovement({ forward: false, backward: false, left: false, right: false });
+           if (dir !== 'stop' && ['forward', 'backward', 'left', 'right'].includes(dir)) {
+               setMovement(prev => ({ ...prev, [dir]: true }));
+               // Auto-stop after 3 seconds to prevent walking forever
+               setTimeout(() => {
+                 setMovement(prev => ({ ...prev, [dir]: false }));
+               }, 3000);
+           }
+        }
       } catch (e) {
         console.error(e);
       }
@@ -109,7 +136,7 @@ export default function App() {
     return () => {
       ws.close();
     };
-  }, []);
+  }, [appliedUserName]);
 
   const playAudioChunk = (base64Audio: string) => {
     if (!outputAudioCtxRef.current) {
@@ -234,11 +261,22 @@ export default function App() {
           
           <div className="absolute inset-0 z-10">
             <Canvas camera={{ position: [0, 2, 5], fov: 45 }}>
+              <color attach="background" args={['#1E293B']} />
+              <fog attach="fog" args={['#1E293B', 5, 20]} />
+              
               <ambientLight intensity={0.5} />
               <directionalLight position={[10, 10, 5]} intensity={1} />
               <Environment preset="city" />
               
-              <RobotPlaceholder robotState={robotState} emotion={emotion} ledColor={robotConfig.ledColor} />
+              {/* Ground Plane */}
+              <mesh position={[0, -0.6, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+                <planeGeometry args={[100, 100]} />
+                <meshStandardMaterial color="#0F1016" roughness={1} />
+              </mesh>
+              
+              <Grid infiniteGrid fadeDistance={20} sectionColor="#2D2F36" cellColor="#1A1C23" position={[0, -0.59, 0]} />
+
+              <RobotPlaceholder robotState={robotState} emotion={emotion} ledColor={robotConfig.ledColor} movement={movement} onMove={handleRobotMove} />
               
               <OrbitControls 
                 enablePan={false} 
@@ -274,7 +312,38 @@ export default function App() {
 
           <div className="absolute top-8 right-8 text-right z-20 pointer-events-none">
             <div className="text-[10px] text-[#5A5E67] font-mono uppercase">Coord_System</div>
-            <div className="text-xs font-mono text-[#8E9299]">X: 104.2 | Y: 0.00 | Z: -12.4</div>
+            <div ref={coordsRef} className="text-xs font-mono text-[#8E9299]">X: 0.00 | Y: 0.00 | Z: 0.00</div>
+          </div>
+
+          {/* Virtual Joystick */}
+          <div className="absolute bottom-8 right-8 p-4 bg-black/40 backdrop-blur-md border border-[#2D2F36] rounded-lg z-20 flex flex-col items-center gap-2">
+            <div className="text-[10px] text-[#5A5E67] font-mono uppercase tracking-widest mb-1">Navigation</div>
+            <button 
+              onPointerDown={() => handleMove('forward', true)} 
+              onPointerUp={() => handleMove('forward', false)}
+              onPointerLeave={() => handleMove('forward', false)}
+              className="w-12 h-12 bg-[#1A1C23] border border-[#3A3D4A] rounded-lg text-white flex items-center justify-center hover:bg-[#2D2F36] active:bg-cyan-500/30 transition-colors cursor-pointer select-none"
+            >↑</button>
+            <div className="flex gap-2">
+              <button 
+                onPointerDown={() => handleMove('left', true)} 
+                onPointerUp={() => handleMove('left', false)}
+                onPointerLeave={() => handleMove('left', false)}
+                className="w-12 h-12 bg-[#1A1C23] border border-[#3A3D4A] rounded-lg text-white flex items-center justify-center hover:bg-[#2D2F36] active:bg-cyan-500/30 transition-colors cursor-pointer select-none"
+              >←</button>
+              <button 
+                onPointerDown={() => handleMove('backward', true)} 
+                onPointerUp={() => handleMove('backward', false)}
+                onPointerLeave={() => handleMove('backward', false)}
+                className="w-12 h-12 bg-[#1A1C23] border border-[#3A3D4A] rounded-lg text-white flex items-center justify-center hover:bg-[#2D2F36] active:bg-cyan-500/30 transition-colors cursor-pointer select-none"
+              >↓</button>
+              <button 
+                onPointerDown={() => handleMove('right', true)} 
+                onPointerUp={() => handleMove('right', false)}
+                onPointerLeave={() => handleMove('right', false)}
+                className="w-12 h-12 bg-[#1A1C23] border border-[#3A3D4A] rounded-lg text-white flex items-center justify-center hover:bg-[#2D2F36] active:bg-cyan-500/30 transition-colors cursor-pointer select-none"
+              >→</button>
+            </div>
           </div>
         </section>
 
@@ -430,6 +499,16 @@ export default function App() {
               </div>
 
               <div>
+                <label className="block text-[10px] text-[#8E9299] font-mono uppercase mb-2">User Name</label>
+                <input 
+                  type="text" 
+                  value={robotConfig.userName}
+                  onChange={(e) => setRobotConfig({...robotConfig, userName: e.target.value})}
+                  className="w-full bg-[#1A1C23] border border-[#3A3D4A] rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-cyan-500 transition-colors"
+                />
+              </div>
+
+              <div>
                 <label className="block text-[10px] text-[#8E9299] font-mono uppercase mb-2">Operating Mode</label>
                 <select 
                   value={robotConfig.mode}
@@ -460,7 +539,10 @@ export default function App() {
             
             <div className="mt-8 flex justify-end">
               <button 
-                onClick={() => setIsConfigOpen(false)}
+                onClick={() => {
+                  setIsConfigOpen(false);
+                  setAppliedUserName(robotConfig.userName);
+                }}
                 className="px-6 py-2 bg-cyan-500/20 text-cyan-400 font-mono text-xs uppercase tracking-wider hover:bg-cyan-500/30 transition-colors cursor-pointer"
               >
                 Save & Apply
